@@ -1,0 +1,9 @@
+import { build } from 'esbuild';
+import { readFile, writeFile } from 'node:fs/promises';
+const worker = await readFile('node_modules/pdfjs-dist/build/pdf.worker.min.mjs', 'utf8');
+const result = await build({ entryPoints: ['src/app.js'], bundle: true, write: false, minify: true, format: 'iife', target: 'es2022', define: { __PDF_WORKER_SOURCE__: JSON.stringify(worker) } });
+const template = await readFile('src/index.html', 'utf8');
+const styles = await readFile('src/style.css', 'utf8');
+const script = result.outputFiles[0].text.replaceAll('</script', '<\\/script');
+await writeFile('index.html', template.replace('/* APP_STYLES */', () => styles).replace('/* APP_SCRIPT */', () => script));
+console.log('index.html criado: aplicativo completo, incluindo leitor PDF e exportação, sem CDN.');
