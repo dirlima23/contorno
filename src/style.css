@@ -5,3 +5,9 @@
 .offset-settings{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:9px;margin:10px 0 12px}.offset-settings input{width:68px;padding:7px;background:#20272b;border:1px solid #35453b;border-radius:4px;color:var(--text)}.offset-settings .text-button{margin-left:auto}.offset-settings small{font-size:8px;color:#7c9686}.general-hint{margin:8px 0 19px;padding-left:20px}.header-right{gap:20px}@media(max-width:760px){.app-header{height:auto;min-height:75px;flex-wrap:wrap;padding-top:10px;padding-bottom:10px;gap:8px}.header-right{gap:12px;flex-wrap:wrap}.header-right .quiet-button{font-size:9px}.header-caption{display:none}}
 
 .demo-actions{display:flex;gap:15px;align-items:center}@media(max-width:760px){.workspace-top{gap:8px;flex-wrap:wrap}.demo-actions{margin-left:auto}}
+
+/* Keep the right-hand studio visible while the longer controls column scrolls. */
+@media(min-width:761px){
+  .workspace{position:sticky;top:16px;align-self:start;max-height:calc(100vh - 32px);max-height:calc(100dvh - 32px);overflow-y:auto;scrollbar-width:thin;scrollbar-color:#465b4c transparent;padding-bottom:12px}
+  .workspace .canvas-wrap{height:clamp(240px,calc(100vh - 580px),580px);height:clamp(240px,calc(100dvh - 580px),580px)}
+}

@@ -14,6 +14,8 @@ Baixe `contorno-offline.zip` no GitHub e extraia, ou use **Salvar app offline** 
 
 A largura física informada é a largura da imagem original, incluindo o fundo. A altura mantém a proporção. Se o contorno ultrapassar a imagem, a página é ampliada para incluí-lo; a escala física da imagem não muda. O PDF também inclui uma pequena margem da espessura da linha. O SVG amplia seu viewBox e preserva a mesma escala, sem cortar a geometria deslocada.
 
+No computador, o painel de visualização acompanha a rolagem dos controles à esquerda. A prévia se adapta à altura da janela; em janelas menores, o próprio painel direito pode ser rolado para acessar a exportação. No celular, os painéis mantêm a rolagem normal.
+
 ## Como escolher o rastreio
 
 | Imagem | Método recomendado | Ajustes |
