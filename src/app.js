@@ -1,14 +1,17 @@
 import * as pdfjs from 'pdfjs-dist/build/pdf.mjs';
 import { jsPDF } from 'jspdf';
-import { offsetContours, convexEnvelope, frameBounds } from './geometry.js';
-import { guessBackground, makeMask, closeMask, filterComponents, traceBoundaries, simplifyClosed, pathCommands, toSvgPath } from './trace.js';
+import { frameBounds } from './geometry.js';
+import {TraceRunner} from './trace-runner.js';
+import { guessBackground, pathCommands, toSvgPath } from './trace.js';
 pdfjs.GlobalWorkerOptions.workerSrc = URL.createObjectURL(new Blob([__PDF_WORKER_SOURCE__], { type: 'text/javascript' }));
 // Capture the pristine, fully bundled document before importing any user image.
 const standaloneHTML='<!doctype html>\n'+document.documentElement.outerHTML;
 const $ = id => document.getElementById(id);
 const canvas=$('canvas'),ctx=canvas.getContext('2d');
 const state={source:null,work:null,rgba:null,w:0,h:0,background:[255,255,255],mask:null,paths:[],commands:[],rawPoints:0,physicalWidth:150,offsetMm:0,bounds:null,view:'overlay',tool:'view',zoom:1,pan:{x:0,y:0},transform:null,region:null,edits:null,history:[],pdf:null,name:'',generation:0};
-let traceTimer=null,toastTimer=null,drag=null;
+const traceRunner=new TraceRunner(__TRACE_WORKER_SOURCE__);
+let traceTimer=null,toastTimer=null,drag=null,traceRevision=0,sourceRevision=0,editRevision=0,appliedMaskVersion=-1,appliedCurveVersion=-1;
+state.originalPaths=[];state.renderPaths=[];state.originalRenderPaths=[];
 function toast(message) { $('toast').textContent=message;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,6500); }
 function controls() {return {mode:$('mode').value,threshold:+$('threshold').value,background:state.background,invert:$('invert').checked,region:state.region};}
 function updateLabels() {
@@ -26,41 +29,51 @@ function updateLabels() {
   const b=state.bounds,scale=state.physicalWidth/state.w,format=n=>n.toLocaleString('pt-BR',{maximumFractionDigits:1});
   $('export-size').textContent=b ? `Área: ${format(b.width*scale)} × ${format(b.height*scale)} mm · imagem: ${format(state.physicalWidth)} mm`:'Proporção original preservada';
 }
-function scheduleTrace() {updateLabels();clearTimeout(traceTimer);$('processing-status').textContent='Atualizando…';traceTimer=setTimeout(updateTrace,75);}
-function updateTrace() {
-  clearTimeout(traceTimer);traceTimer=null;if(!state.rgba)return;
-  const start=performance.now(),opts=controls();
-  let mask=closeMask(makeMask(state.rgba,state.w,state.h,opts),state.w,state.h,+$('close').value);
-  for(let i=0;i<mask.length;i++) {
-    if(state.edits[i]) mask[i]=state.edits[i]>0?1:0;
-    if(state.region){const x=i%state.w,y=Math.floor(i/state.w),r=state.region;if(x<r.x || y<r.y || x>=r.x+r.w || y>=r.y+r.h)mask[i]=0;}
-  }
-  mask=filterComponents(mask,state.w,state.h,+$('noise').value,$('largest').checked);
-  const includeHoles=$('holes').checked && !$('general').checked;
-  const raw=traceBoundaries(mask,state.w,state.h,includeHoles);
-  state.originalPaths=raw.filter(p=>p.length).map(p=>simplifyClosed(p,1));
-  const base=$('general').checked ? convexEnvelope(raw) : raw;
-  const shifted=offsetContours(base,state.offsetMm*state.w/state.physicalWidth,includeHoles);
-  state.rawPoints=shifted.reduce((n,p)=>n+p.length,0);
-  state.paths=shifted.map(p=>simplifyClosed(p,+$('simplify').value));
-  state.bounds=frameBounds(state.paths,state.w,state.h);
-  state.commands=state.paths.map(p=>pathCommands(p,+$('smooth').value));state.mask=mask;
-  state.maskCanvas=document.createElement('canvas');state.maskCanvas.width=state.w;state.maskCanvas.height=state.h;
-  const mc=state.maskCanvas.getContext('2d'),pixels=mc.createImageData(state.w,state.h);
-  for(let i=0;i<mask.length;i++)if(mask[i]){pixels.data[i*4]=51;pixels.data[i*4+1]=167;pixels.data[i*4+2]=108;pixels.data[i*4+3]=120;}
-  mc.putImageData(pixels,0,0);
-  const points=state.paths.reduce((n,p)=>n+p.length,0);
-  $('path-count').textContent=`${state.paths.length} contorno${state.paths.length===1?'':'s'}`;
-  $('point-count').textContent=`${points.toLocaleString('pt-BR')} pontos`;
-  $('reduction').textContent=state.rawPoints?`−${Math.round((1-points/state.rawPoints)*100)}% de pontos`:'';
-  $('reduction').hidden=!state.rawPoints;
-  $('processing-status').textContent=`Rastreio em ${Math.round(performance.now()-start)} ms`;
-  $('export-pdf').disabled=$('export-svg').disabled=!state.paths.length;
-  $('empty-state').hidden=state.paths.length>0;updateLabels();draw();
+function traceOptions(){return {...controls(),close:+$('close').value,noise:+$('noise').value,largest:$('largest').checked,holes:$('holes').checked,general:$('general').checked,offsetPixels:state.offsetMm*state.w/state.physicalWidth,simplify:+$('simplify').value,smooth:+$('smooth').value,editRevision};}
+function scheduleTrace(){
+  traceRevision++;updateLabels();clearTimeout(traceTimer);$('processing-status').textContent='Atualizando…';
+  traceTimer=setTimeout(updateTrace,60);
 }
-function drawCommand(context,commands) {
-  context.beginPath();
-  for(const [op,...v] of commands) {if(op==='M')context.moveTo(...v);if(op==='L')context.lineTo(...v);if(op==='Q')context.quadraticCurveTo(...v);if(op==='Z')context.closePath();}
+async function updateTrace(){
+  clearTimeout(traceTimer);traceTimer=null;if(!state.rgba)return false;
+  const revision=++traceRevision,source=sourceRevision,start=performance.now();state.traceError=null;
+  $('processing-status').textContent='Atualizando…';
+  try{
+    const result=await traceRunner.request(traceOptions(),state.edits,appliedMaskVersion);
+    if(!result || revision!==traceRevision || source!==sourceRevision)return false;
+    Object.assign(state,{paths:result.paths,bounds:result.bounds,commands:result.commands,originalPaths:result.originalPaths,rawPoints:result.rawPoints});
+    if(result.maskRGBA){
+      if(!state.maskCanvas){state.maskCanvas=document.createElement('canvas');state.maskCanvas.width=state.w;state.maskCanvas.height=state.h;}
+      state.maskCanvas.getContext('2d').putImageData(new ImageData(result.maskRGBA,state.w,state.h),0,0);
+    }
+    if(appliedMaskVersion!==result.maskVersion){state.originalRenderPaths=state.originalPaths.map(p=>new Path2D(toSvgPath(pathCommands(p))));}
+    if(appliedCurveVersion!==result.curveVersion){state.renderPaths=state.commands.map(c=>new Path2D(toSvgPath(c)));}
+    appliedMaskVersion=result.maskVersion;appliedCurveVersion=result.curveVersion;
+    const points=state.paths.reduce((n,p)=>n+p.length,0);
+    $('path-count').textContent=`${state.paths.length} contorno${state.paths.length===1?'':'s'}`;
+    $('point-count').textContent=`${points.toLocaleString('pt-BR')} pontos`;
+    $('reduction').textContent=state.rawPoints?`−${Math.round((1-points/state.rawPoints)*100)}% de pontos`:'';
+    $('reduction').hidden=!state.rawPoints;
+    $('export-pdf').disabled=$('export-svg').disabled=!state.paths.length;
+    $('empty-state').hidden=state.paths.length>0;updateLabels();draw();
+    $('processing-status').textContent=`Rastreio em ${Math.round(performance.now()-start)} ms`;
+    $('processing-status').dataset.stages=JSON.stringify(result.stats.stages);
+    $('processing-status').dataset.computeMs=result.stats.computeMs;
+    $('processing-status').dataset.execution=result.execution;
+    return true;
+  }catch(error){
+    if(revision!==traceRevision || source!==sourceRevision)return false;
+    state.traceError=error;$('processing-status').textContent='Não foi possível rastrear';toast(error.message);
+    $('export-pdf').disabled=$('export-svg').disabled=true;return false;
+  }
+}
+async function ensureCurrentTrace(){
+  const source=sourceRevision;
+  while(!await updateTrace()){
+    if(source!==sourceRevision)throw new Error('A imagem mudou durante o processamento. Exporte novamente.');
+    if(state.traceError)throw state.traceError;
+    if(!state.rgba)throw new Error('Importe uma imagem antes de exportar.');
+  }
 }
 function draw() {
   const bounds=canvas.getBoundingClientRect();if(!bounds.width || !state.work)return;
@@ -77,11 +90,11 @@ function draw() {
   if(state.view==='mask'){ctx.fillStyle='#fbfbf7dd';ctx.fillRect(0,0,state.w,state.h);}
   if(state.view!=='vector' && state.maskCanvas){ctx.globalAlpha=state.view==='overlay'?.32:1;ctx.drawImage(state.maskCanvas,0,0);ctx.globalAlpha=1;}
   ctx.strokeStyle=$('stroke-color').value;ctx.lineWidth=1.7/scale;ctx.lineJoin='round';
-  if(state.view==='overlay' && state.offsetMm!==0){ctx.save();ctx.strokeStyle='#768a80';ctx.lineWidth=.8/scale;ctx.setLineDash([4/scale,4/scale]);for(const p of state.originalPaths){drawCommand(ctx,pathCommands(p));ctx.stroke();}ctx.restore();}
-  if(state.view!=='mask')for(const commands of state.commands){drawCommand(ctx,commands);ctx.stroke();}
+  if(state.view==='overlay' && state.offsetMm!==0){ctx.save();ctx.strokeStyle='#768a80';ctx.lineWidth=.8/scale;ctx.setLineDash([4/scale,4/scale]);for(const path of state.originalRenderPaths)ctx.stroke(path);ctx.restore();}
+  if(state.view!=='mask')for(const path of state.renderPaths)ctx.stroke(path);
   if($('points').checked && state.view!=='mask') {
     ctx.fillStyle='#fff';ctx.strokeStyle='#a53b55';ctx.lineWidth=.8/scale;
-    for(const path of state.paths)for(const [px,py]of path){ctx.beginPath();ctx.arc(px,py,2.3/scale,0,2*Math.PI);ctx.fill();ctx.stroke();}
+    ctx.beginPath();for(const path of state.paths)for(const [px,py]of path){ctx.moveTo(px+2.3/scale,py);ctx.arc(px,py,2.3/scale,0,2*Math.PI);}ctx.fill();ctx.stroke();
   }
   const region=drag?.kind==='region'?normalizedRect(drag.start,drag.current):state.region;
   if(region){ctx.setLineDash([5/scale,4/scale]);ctx.strokeStyle='#2f7053';ctx.lineWidth=1.5/scale;ctx.strokeRect(region.x,region.y,region.w,region.h);ctx.setLineDash([]);}
@@ -99,6 +112,7 @@ function setTool(tool) {
 }
 function pushHistory(){state.history.push({edits:state.edits.slice(),region:state.region?{...state.region}:null});if(state.history.length>15)state.history.shift();$('undo').disabled=false;}
 function paint(p) {
+  editRevision++;
   const radius=+$('brush').value/2;
   for(let y=Math.max(0,Math.floor(p.y-radius));y<Math.min(state.h,Math.ceil(p.y+radius));y++)for(let x=Math.max(0,Math.floor(p.x-radius));x<Math.min(state.w,Math.ceil(p.x+radius));x++)if((x-p.x)**2+(y-p.y)**2<=radius*radius)state.edits[y*state.w+x]=state.tool==='add'?1:-1;
 }
@@ -120,26 +134,31 @@ canvas.addEventListener('pointermove',event=>{
 });
 function finishDrag(){if(!drag)return;if(drag.kind==='region'){pushHistory();state.region=normalizedRect(drag.start,drag.current);scheduleTrace();}else if(drag.kind==='brush')updateTrace();drag=null;draw();}
 canvas.addEventListener('pointerup',finishDrag);canvas.addEventListener('pointercancel',finishDrag);
-function resetSettings() {
+function resetSettings(runTrace=true) {
   $('mode').value='background';$('threshold').value=16;$('noise').value=40;$('close').value=0;$('simplify').value=1.5;$('smooth').value=25;$('offset').value=0;$('offset-mm').value=0;state.offsetMm=0;
   for(const id of ['largest','invert','holes','points','general'])$(id).checked=false;
   $('holes').disabled=false;
+  editRevision++;
   state.region=null;state.history=[];$('undo').disabled=true;
   if(state.edits)state.edits.fill(0);
   if(state.rgba)state.background=guessBackground(state.rgba,state.w,state.h);
-  $('background-value').textContent='Automática';setTool('view');updateLabels();updateTrace();
+  $('background-value').textContent='Automática';setTool('view');updateLabels();if(runTrace)updateTrace();
 }
 function commitSource(source,name,demo=false) {
   const maxSide=1400,ratio=Math.min(1,maxSide/Math.max(source.width,source.height));
   const work=document.createElement('canvas');work.width=Math.max(1,Math.round(source.width*ratio));work.height=Math.max(1,Math.round(source.height*ratio));
   work.getContext('2d',{willReadFrequently:true}).drawImage(source,0,0,work.width,work.height);
   const rgba=work.getContext('2d').getImageData(0,0,work.width,work.height).data;
-  Object.assign(state,{source,work,rgba,w:work.width,h:work.height,name,edits:new Int8Array(work.width*work.height),zoom:1,pan:{x:0,y:0},paths:[],commands:[],maskCanvas:null});
+  Object.assign(state,{source,work,rgba,w:work.width,h:work.height,name,edits:new Int8Array(work.width*work.height),zoom:1,pan:{x:0,y:0},paths:[],commands:[],bounds:null,maskCanvas:null,renderPaths:[],originalPaths:[],originalRenderPaths:[]});
+  sourceRevision++;traceRevision++;appliedMaskVersion=appliedCurveVersion=-1;editRevision=0;
+  traceRunner.setSource({rgba,width:work.width,height:work.height});
+  $('path-count').textContent='0 contornos';$('export-pdf').disabled=$('export-svg').disabled=true;draw();
   $('filename').textContent=name;$('demo-tag').hidden=!demo;
   $('dimensions').textContent=`${source.width} × ${source.height} px · rastreio ${work.width} × ${work.height} px`;
-  resetSettings();
+  resetSettings(false);
   let transparent=false;for(let i=3;i<rgba.length;i+=4)if(rgba[i]<250){transparent=true;break;}
-  if(transparent){$('mode').value='alpha';$('threshold').value=10;updateLabels();updateTrace();}
+  if(transparent){$('mode').value='alpha';$('threshold').value=10;}
+  updateLabels();updateTrace();
 }
 function imageFromURL(url) {return new Promise((resolve,reject)=>{const image=new Image();image.onload=()=>resolve(image);image.onerror=()=>reject(new Error('Não foi possível ler esta imagem.'));image.src=url;});}
 function cleanSvg(text) {
@@ -227,29 +246,30 @@ function createRingDemo() {
 }
 function download(blob,name){const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);}
 function baseName(){return state.name.replace(/\.[^.]+$/,'').replace(/[^\p{L}\p{N}_-]+/gu,'-').replace(/-+$/,'')||'contorno';}
-function exportSettings() {
+async function exportSettings() {
+  await ensureCurrentTrace();
   const width=+$('width-mm').value,stroke=+$('stroke-mm').value;
   if(!Number.isFinite(width) || width<1 || width>2000)throw new Error('A largura deve estar entre 1 e 2.000 mm.');
   if(!Number.isFinite(stroke) || stroke<.05 || stroke>5)throw new Error('A espessura deve estar entre 0,05 e 5 mm.');
-  updateTrace();if(!state.paths.length)throw new Error('Nenhum contorno encontrado. Ajuste a seleção antes de exportar.');
+  if(!state.paths.length)throw new Error('Nenhum contorno encontrado. Ajuste a seleção antes de exportar.');
   const offset=+$('offset-mm').value;
   if(!$('offset-mm').value || !Number.isFinite(offset) || offset < -20 || offset > 50)throw new Error('O deslocamento deve estar entre −20 e 50 mm.');
   const height=width*state.h/state.w,frame=state.bounds,pageWidth=frame.width*width/state.w,pageHeight=frame.height*width/state.w;
   if(pageWidth>5000 || pageHeight>5000)throw new Error('A altura resultante é muito grande. Diminua a largura.');
   return {width,height,pageWidth,pageHeight,frame,stroke,color:$('stroke-color').value,both:$('export-content').value==='both'};
 }
-function exportSVG() {
+async function exportSVG() {
   try {
-    const {width,pageWidth,pageHeight,frame,stroke,color,both}=exportSettings(),strokePixels=stroke*state.w/width;
+    const {width,pageWidth,pageHeight,frame,stroke,color,both}=await exportSettings(),strokePixels=stroke*state.w/width;
     const paths=state.commands.map(c=>`<path d="${toSvgPath(c)}"/>`).join('\n');
     const image=both?`<image href="${state.source.toDataURL('image/png')}" x="0" y="0" width="${state.w}" height="${state.h}"/>`:'';
     const svg=`<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${pageWidth}mm" height="${pageHeight}mm" viewBox="${frame.minX} ${frame.minY} ${frame.width} ${frame.height}">\n${image}\n<g fill="none" stroke="${color}" stroke-width="${strokePixels}" stroke-linejoin="round" stroke-linecap="round">${paths}</g>\n</svg>`;
     download(new Blob([svg],{type:'image/svg+xml'}),`${baseName()}-contorno.svg`);toast('SVG exportado com contorno vetorial.');
   } catch(error){toast(error.message);}
 }
-function exportPDF() {
+async function exportPDF() {
   try {
-    const {width,height,pageWidth,pageHeight,frame,stroke,color,both}=exportSettings();
+    const {width,height,pageWidth,pageHeight,frame,stroke,color,both}=await exportSettings();
     // A stroke-width margin preserves lines on the image boundary without changing the requested image width.
     const margin=stroke,doc=new jsPDF({orientation:pageWidth>pageHeight?'landscape':'portrait',unit:'mm',format:[pageWidth+margin*2,pageHeight+margin*2],compress:true,precision:5});
     const scale=width/state.w,originX=margin-frame.minX*scale,originY=margin-frame.minY*scale;
@@ -274,7 +294,7 @@ function exportPDF() {
 $('import').onclick=()=>$('file').click();$('file').onchange=event=>{importFile(event.target.files[0]);event.target.value='';};
 $('load-page').onclick=async()=>{if(!state.pdf)return;const generation=++state.generation;try{await loadPDFPage(state.pdf,+$('pdf-page').value,generation);}catch(e){toast(e.message);}};
 $('save-app').onclick=()=>{download(new Blob([standaloneHTML],{type:'text/html;charset=utf-8'}),'contorno-offline.html');toast('Aplicativo completo salvo. Abra contorno-offline.html no navegador, mesmo sem internet.');};
-$('demo-ring').onclick=createRingDemo;$('demo').onclick=createDemo;$('reset').onclick=resetSettings;
+$('demo-ring').onclick=createRingDemo;$('demo').onclick=createDemo;$('reset').onclick=()=>resetSettings();
 for(const id of ['threshold','noise','close','simplify','smooth','largest','invert','holes'])$(id).addEventListener('input',scheduleTrace);
 $('mode').onchange=()=>{$('threshold').value=$('mode').value==='dark'?55:$('mode').value==='alpha'?10:16;scheduleTrace();};
 $('pick-background').onclick=()=>setTool(state.tool==='pick'?'view':'pick');
@@ -295,8 +315,8 @@ $('offset').oninput=event=>changeOffset(event.target);$('offset-mm').oninput=eve
 $('offset-zero').onclick=()=>{state.offsetMm=0;$('offset').value=$('offset-mm').value=0;scheduleTrace();};
 $('general').onchange=()=>{$('holes').disabled=$('general').checked;scheduleTrace();};
 $('export-pdf').onclick=exportPDF;$('export-svg').onclick=exportSVG;
-$('undo').onclick=()=>{const previous=state.history.pop();if(previous){state.edits=previous.edits;state.region=previous.region;$('undo').disabled=!state.history.length;updateTrace();}};
-$('clear-edits').onclick=()=>{pushHistory();state.edits.fill(0);state.region=null;updateTrace();};
+$('undo').onclick=()=>{const previous=state.history.pop();if(previous){editRevision++;state.edits=previous.edits;state.region=previous.region;$('undo').disabled=!state.history.length;updateTrace();}};
+$('clear-edits').onclick=()=>{pushHistory();editRevision++;state.edits.fill(0);state.region=null;updateTrace();};
 document.querySelectorAll('[data-view]').forEach(button=>button.onclick=()=>{state.view=button.dataset.view;document.querySelectorAll('[data-view]').forEach(b=>b.classList.toggle('active',b===button));$('canvas-view-label').textContent=state.view==='mask'?'ÁREA SELECIONADA':state.view==='vector'?'CONTORNO VETORIAL':'PRÉVIA DO RASTREIO';draw();});
 document.querySelectorAll('[data-tool]').forEach(b=>b.onclick=()=>setTool(b.dataset.tool));
 $('zoom-in').onclick=()=>{state.zoom=Math.min(8,state.zoom*1.25);draw();};$('zoom-out').onclick=()=>{state.zoom=Math.max(.25,state.zoom/1.25);draw();};$('zoom-fit').onclick=()=>{state.zoom=1;state.pan={x:0,y:0};draw();};

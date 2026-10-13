@@ -13,7 +13,7 @@ export function guessBackground(rgba, width, height) {
 export function makeMask(rgba, width, height, options) {
   const mask = new Uint8Array(width*height);
   const { mode, threshold, background, invert, region } = options;
-  const limit = threshold/100;
+  const limit = threshold/100, distanceLimitSq=limit*limit*255*255*3;
   for(let y=0;y<height;y++) for(let x=0;x<width;x++) {
     const p=y*width+x, i=p*4;
     if(region && (x<region.x || y<region.y || x>=region.x+region.w || y>=region.y+region.h)) continue;
@@ -21,7 +21,7 @@ export function makeMask(rgba, width, height, options) {
     let selected;
     if(mode==='alpha') selected=alpha>limit;
     else if(mode==='dark') selected=(.2126*rgba[i]+.7152*rgba[i+1]+.0722*rgba[i+2])/255<=limit;
-    else selected=Math.hypot(rgba[i]-background[0],rgba[i+1]-background[1],rgba[i+2]-background[2])/(255*Math.sqrt(3))>limit;
+    else {const dr=rgba[i]-background[0],dg=rgba[i+1]-background[1],db=rgba[i+2]-background[2];selected=dr*dr+dg*dg+db*db>distanceLimitSq;}
     mask[p]=alpha>0.02 && (invert ? !selected : selected) ? 1 : 0;
   }
   return mask;
@@ -49,21 +49,24 @@ function morphology(mask,w,h,r,erode) {
 export function closeMask(mask,w,h,r) { return r>0 ? morphology(morphology(mask,w,h,r,false),w,h,r,true) : mask; }
 
 export function filterComponents(mask,w,h,minArea,largestOnly) {
-  const visited=new Uint8Array(mask.length), queue=new Int32Array(mask.length), components=[];
-  for(let start=0;start<mask.length;start++) {
-    if(!mask[start] || visited[start]) continue;
+  const length=mask.length,visited=new Uint8Array(length),queue=new Int32Array(length),out=new Uint8Array(length);
+  let largest=null;
+  for(let start=0;start<length;start++) {
+    if(!mask[start] || visited[start])continue;
     let head=0,tail=1;queue[0]=start;visited[start]=1;
-    while(head<tail) {
+    while(head<tail){
       const p=queue[head++],x=p%w;
-      for(const q of [x>0?p-1:-1,x<w-1?p+1:-1,p>=w?p-w:-1,p<mask.length-w?p+w:-1]) {
-        if(q>=0 && mask[q] && !visited[q]) {visited[q]=1;queue[tail++]=q;}
-      }
+      // Avoid allocating a four-element array for every selected pixel.
+      let q=p-1;if(x>0 && mask[q] && !visited[q]){visited[q]=1;queue[tail++]=q;}
+      q=p+1;if(x<w-1 && mask[q] && !visited[q]){visited[q]=1;queue[tail++]=q;}
+      q=p-w;if(p>=w && mask[q] && !visited[q]){visited[q]=1;queue[tail++]=q;}
+      q=p+w;if(q<length && mask[q] && !visited[q]){visited[q]=1;queue[tail++]=q;}
     }
-    if(tail>=minArea) components.push(queue.slice(0,tail));
+    if(tail<minArea)continue;
+    if(largestOnly){if(!largest || tail>=largest.length)largest=queue.slice(0,tail);}
+    else for(let i=0;i<tail;i++)out[queue[i]]=1;
   }
-  const out=new Uint8Array(mask.length);
-  const retained=largestOnly && components.length ? [components.reduce((a,b)=>a.length>b.length?a:b)] : components;
-  for(const component of retained) for(const p of component) out[p]=1;
+  if(largest)for(const p of largest)out[p]=1;
   return out;
 }
 

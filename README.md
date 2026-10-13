@@ -4,7 +4,7 @@ Aplicativo em português para rastrear o limite externo de formas em imagens, vi
 
 ## Usar no computador, offline
 
-Baixe `contorno-offline.zip` no GitHub e extraia, ou use **Salvar app offline** no cabeçalho do aplicativo aberto. Os links de artefatos do chat podem falhar; essas opções usam download direto. Também pode usar **Code → Download ZIP** no repositório. Abra `index.html` ou `contorno-offline.html` com um navegador atualizado (Chrome, Edge ou Firefox). O arquivo inclui o aplicativo, o leitor de PDF, seu worker e a biblioteca de exportação. Não precisa de Node, instalação, CDN ou conexão à internet.
+Baixe `contorno-offline.zip` no GitHub e extraia, ou use **Salvar app offline** no cabeçalho do aplicativo aberto. Os links de artefatos do chat podem falhar; essas opções usam download direto. Também pode usar **Code → Download ZIP** no repositório. Abra `index.html` ou `contorno-offline.html` com um navegador atualizado (Chrome, Edge ou Firefox). O arquivo inclui o aplicativo, o leitor de PDF, os workers de leitura e rastreio e a biblioteca de exportação. Não precisa de Node, instalação, CDN ou conexão à internet.
 
 1. Clique em **Importar arquivo** (ou arraste para a área de visualização).
 2. Escolha o método e ajuste os sliders. Use a aba **Seleção** para conferir a área que será traçada.
@@ -40,6 +40,18 @@ Simplificação e suavização podem modificar levemente a distância local. Use
 
 **Salvar app offline** baixa o documento completo com todas as bibliotecas incorporadas. A imagem importada, seu nome e suas correções não entram nessa cópia; o arquivo inicia com o exemplo padrão.
 
+## Desempenho
+
+A versão 1.2 reaproveita os resultados de seleção, componentes, limites, deslocamento e simplificação. Mudar suavização calcula apenas as curvas; mudar simplificação reaproveita o deslocamento; mudar deslocamento reaproveita os limites detectados. Zoom, visualização e cor da linha não refazem o rastreio.
+
+O cálculo roda em um Web Worker incorporado ao HTML para manter a interface responsiva. Há no máximo um cálculo em execução e um ajuste mais recente aguardando; posições intermediárias dos sliders são descartadas. Importar outra imagem cancela o trabalho anterior. A exportação espera o resultado do último ajuste, evitando exportar uma prévia antiga.
+
+Máscaras e caminhos de desenho também são reutilizados. A resolução e a geometria do rastreio continuam iguais. Se o navegador bloquear workers, o app mantém o funcionamento e os caches, mas cálculos pesados podem bloquear temporariamente a interface.
+
+Em uma medição local com Chromium, SVG de 1.400 × 1.400 px e 96 formas em círculo, o ajuste de suavização passou de mediana de 294 ms para 66 ms, incluindo espera do slider, comunicação e desenho. Esses valores não representam todo computador ou tipo de imagem. Fotos com muitos detalhes, formas complexas e offsets grandes ainda podem exigir mais tempo.
+
+Para medir apenas o custo de cálculo e a reutilização das etapas, execute `npm run benchmark`. Esse benchmark não inclui desenho de tela ou comunicação com o worker; não compare seu número diretamente com a latência total da interface.
+
 ## Limites desta versão
 
 - Não usa IA: cores parecidas entre objeto e fundo, sombras e texturas exigem correções. A estimativa automática de fundo pode falhar quando os objetos cobrem vários cantos; use o conta-gotas.
@@ -70,6 +82,8 @@ npm test
 ```
 
 Os testes usam Chromium em `/usr/bin/chromium`; defina `CONTORNO_BROWSER` com o caminho do executável se necessário. Os testes carregam o HTML completo com a rede desativada, verificam PNG/SVG/PDF, seleção, ferramentas manuais, exportação e layout móvel. O Chromium gerenciado do ambiente bloqueia navegação `file://`; por isso o teste injeta o documento exato com `setContent`, sem servidor ou recursos de rede. A abertura por duplo clique em um computador pessoal não foi validada neste ambiente gerenciado.
+
+Os testes também verificam a reutilização das etapas, a equivalência geométrica do cache, alterações rápidas, exportação do último ajuste, troca de imagem durante o processamento, resposta da interface e funcionamento sem worker.
 
 A exportação é verificada pelos operadores de desenho vetorial no PDF e pelos caminhos no SVG, incluindo as versões com e sem imagem. O núcleo também é testado para furos, formas nos limites, pixels diagonais, filtros e simplificação.
 
