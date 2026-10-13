@@ -107,7 +107,7 @@ function setTool(tool) {
   state.tool=tool;document.querySelectorAll('[data-tool]').forEach(b=>b.classList.toggle('active',b.dataset.tool===tool));
   $('pick-background').classList.toggle('active',tool==='pick');$('brush-settings').hidden=!['add','erase'].includes(tool);
   canvas.style.cursor=tool==='view'?'grab':tool==='pick'?'crosshair':tool==='region'?'crosshair':'crosshair';
-  const hints={view:'Arraste para mover. Use + e − para aproximar.',region:'Arraste um retângulo ao redor do que deseja traçar.',add:'Pinte sobre as partes que devem entrar no contorno.',erase:'Pinte sobre as partes que devem sair do contorno.',pick:'Clique na imagem para escolher a cor do fundo.'};
+  const hints={view:'Arraste para mover. Roda do mouse ou + / − para zoom.',region:'Arraste um retângulo ao redor do que deseja traçar.',add:'Pinte sobre as partes que devem entrar no contorno.',erase:'Pinte sobre as partes que devem sair do contorno.',pick:'Clique na imagem para escolher a cor do fundo.'};
   $('tool-hint').textContent=hints[tool];
 }
 function pushHistory(){state.history.push({edits:state.edits.slice(),region:state.region?{...state.region}:null});if(state.history.length>15)state.history.shift();$('undo').disabled=false;}
@@ -319,9 +319,45 @@ $('undo').onclick=()=>{const previous=state.history.pop();if(previous){editRevis
 $('clear-edits').onclick=()=>{pushHistory();editRevision++;state.edits.fill(0);state.region=null;updateTrace();};
 document.querySelectorAll('[data-view]').forEach(button=>button.onclick=()=>{state.view=button.dataset.view;document.querySelectorAll('[data-view]').forEach(b=>b.classList.toggle('active',b===button));$('canvas-view-label').textContent=state.view==='mask'?'ÁREA SELECIONADA':state.view==='vector'?'CONTORNO VETORIAL':'PRÉVIA DO RASTREIO';draw();});
 document.querySelectorAll('[data-tool]').forEach(b=>b.onclick=()=>setTool(b.dataset.tool));
-$('zoom-in').onclick=()=>{state.zoom=Math.min(8,state.zoom*1.25);draw();};$('zoom-out').onclick=()=>{state.zoom=Math.max(.25,state.zoom/1.25);draw();};$('zoom-fit').onclick=()=>{state.zoom=1;state.pan={x:0,y:0};draw();};
+function changeZoom(next,clientPoint=null){
+  if(!state.work)return;
+  const zoom=Math.max(.25,Math.min(8,next)),ratio=zoom/state.zoom;
+  if(ratio===1)return;
+  const bounds=canvas.getBoundingClientRect();
+  const x=clientPoint?clientPoint.x-bounds.left:bounds.width/2,y=clientPoint?clientPoint.y-bounds.top:bounds.height/2;
+  // Preserve the image coordinate under the cursor (or the viewport center).
+  state.pan={x:state.pan.x*ratio+(x-bounds.width/2)*(1-ratio),y:state.pan.y*ratio+(y-bounds.height/2)*(1-ratio)};
+  state.zoom=zoom;draw();
+}
+$('zoom-in').onclick=()=>changeZoom(state.zoom*1.25);$('zoom-out').onclick=()=>changeZoom(state.zoom/1.25);$('zoom-fit').onclick=()=>{state.zoom=1;state.pan={x:0,y:0};draw();};
+canvas.addEventListener('wheel',event=>{
+  if(!state.transform || !event.deltaY || $('help-dialog').open)return;
+  event.preventDefault();if(drag)return;
+  const units=event.deltaMode===1?16:event.deltaMode===2?canvas.getBoundingClientRect().height:1;
+  const delta=Math.max(-300,Math.min(300,event.deltaY*units));
+  changeZoom(state.zoom*Math.exp(-delta*.002),{x:event.clientX,y:event.clientY});
+},{passive:false});
 $('help').onclick=()=>$('help-dialog').showModal();$('close-help').onclick=()=>$('help-dialog').close();
 $('canvas-wrap').addEventListener('dragover',event=>event.preventDefault());$('canvas-wrap').addEventListener('drop',event=>{event.preventDefault();importFile(event.dataTransfer.files[0]);});
 new ResizeObserver(draw).observe($('canvas-wrap'));
-document.addEventListener('keydown',event=>{if(event.key==='Escape')setTool('view');if((event.ctrlKey || event.metaKey) && event.key==='z' && !['INPUT','SELECT'].includes(document.activeElement.tagName)){event.preventDefault();$('undo').click();}});
+document.addEventListener('paste',event=>{
+  if(event.defaultPrevented || $('help-dialog').open || !event.clipboardData)return;
+  const items=Array.from(event.clipboardData.items||[]);
+  let image=items.find(item=>item.kind==='file' && item.type.startsWith('image/'))?.getAsFile();
+  if(!image)image=Array.from(event.clipboardData.files||[]).find(file=>file.type.startsWith('image/'));
+  if(!image)return; // Text and links keep their usual paste behavior.
+  event.preventDefault();
+  const extension=image.type.split('/')[1]?.replace('svg+xml','svg').replace('jpeg','jpg')||'png';
+  const name=image.name && !/^image\.[^.]+$/i.test(image.name)?image.name:`Imagem colada.${extension}`;
+  importFile(new File([image],name,{type:image.type}));
+});
+document.addEventListener('keydown',event=>{
+  if(event.key==='Escape')setTool('view');
+  const target=event.target,editing=target instanceof Element && !!target.closest('input,textarea,select,[contenteditable]:not([contenteditable="false"])');
+  if(editing || $('help-dialog').open)return;
+  if((event.ctrlKey || event.metaKey) && event.key.toLowerCase()==='z'){event.preventDefault();$('undo').click();return;}
+  if(event.ctrlKey || event.metaKey || event.altKey)return;
+  if(['+','='].includes(event.key) || event.code==='NumpadAdd'){event.preventDefault();changeZoom(state.zoom*1.25);}
+  else if(['-','−','_'].includes(event.key) || event.code==='NumpadSubtract'){event.preventDefault();changeZoom(state.zoom/1.25);}
+});
 createDemo();

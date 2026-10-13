@@ -6,7 +6,7 @@ Aplicativo em português para rastrear o limite externo de formas em imagens, vi
 
 Baixe `contorno-offline.zip` no GitHub e extraia, ou use **Salvar app offline** no cabeçalho do aplicativo aberto. Os links de artefatos do chat podem falhar; essas opções usam download direto. Também pode usar **Code → Download ZIP** no repositório. Abra `index.html` ou `contorno-offline.html` com um navegador atualizado (Chrome, Edge ou Firefox). O arquivo inclui o aplicativo, o leitor de PDF, os workers de leitura e rastreio e a biblioteca de exportação. Não precisa de Node, instalação, CDN ou conexão à internet.
 
-1. Clique em **Importar arquivo** (ou arraste para a área de visualização).
+1. Clique em **Importar arquivo**, arraste para a área de visualização ou cole uma imagem com **Ctrl+V** (**Cmd+V** no Mac).
 2. Escolha o método e ajuste os sliders. Use a aba **Seleção** para conferir a área que será traçada.
 3. Corrija com **Área**, **Adicionar** e **Remover**. Há **Desfazer** e **Limpar correções**.
 4. Defina a **Largura física da imagem** e ajuste **Deslocamento do contorno** em milímetros. Valores positivos expandem e unem formas próximas; negativos encolhem. Para envolver todas as formas em uma silhueta, marque **Contorno geral do conjunto**. Depois ajuste **Simplificar pontos** e **Suavizar curvas**. **Mostrar pontos** ajuda a conferir o resultado.
@@ -15,6 +15,15 @@ Baixe `contorno-offline.zip` no GitHub e extraia, ou use **Salvar app offline** 
 A largura física informada é a largura da imagem original, incluindo o fundo. A altura mantém a proporção. Se o contorno ultrapassar a imagem, a página é ampliada para incluí-lo; a escala física da imagem não muda. O PDF também inclui uma pequena margem da espessura da linha. O SVG amplia seu viewBox e preserva a mesma escala, sem cortar a geometria deslocada.
 
 No computador, o painel de visualização acompanha a rolagem dos controles à esquerda. A prévia se adapta à altura da janela; em janelas menores, o próprio painel direito pode ser rolado para acessar a exportação. No celular, os painéis mantêm a rolagem normal.
+
+## Colar imagens e navegar pela prévia
+
+- **Ctrl+V / Cmd+V:** importa a primeira imagem presente na área de transferência. Use “Copiar imagem” no navegador ou copie uma captura de tela. Colar apenas um link ou texto não importa uma imagem; a colagem de texto nos campos continua normal.
+- **Roda do mouse sobre a prévia:** aumenta ou diminui o zoom, mantendo o ponto sob o cursor no mesmo lugar. Fora da prévia, a roda continua rolando a página ou o painel.
+- **+ / = / −:** aumenta ou diminui o zoom; também aceita + e − do teclado numérico. Esses atalhos não interferem na edição de campos ou no zoom do próprio navegador com Ctrl/Cmd.
+- **Encaixar:** restaura o zoom e a posição. Também continuam disponíveis os botões + e − e o arraste para mover.
+
+O zoom altera apenas a visualização: não recalcula o rastreio, não muda os milímetros e não afeta o PDF/SVG exportado.
 
 ## Como escolher o rastreio
 
@@ -85,7 +94,7 @@ npm test
 
 Os testes usam Chromium em `/usr/bin/chromium`; defina `CONTORNO_BROWSER` com o caminho do executável se necessário. Os testes carregam o HTML completo com a rede desativada, verificam PNG/SVG/PDF, seleção, ferramentas manuais, exportação e layout móvel. O Chromium gerenciado do ambiente bloqueia navegação `file://`; por isso o teste injeta o documento exato com `setContent`, sem servidor ou recursos de rede. A abertura por duplo clique em um computador pessoal não foi validada neste ambiente gerenciado.
 
-Os testes também verificam a reutilização das etapas, a equivalência geométrica do cache, alterações rápidas, exportação do último ajuste, troca de imagem durante o processamento, resposta da interface e funcionamento sem worker.
+Os testes também verificam a reutilização das etapas, a equivalência geométrica do cache, alterações rápidas, exportação do último ajuste, troca de imagem durante o processamento, resposta da interface e funcionamento sem worker. A colagem é testada com uma imagem na área de transferência real do Chromium; também são verificados o zoom com roda e teclado, a ancoragem no cursor e a colagem normal de texto.
 
 A exportação é verificada pelos operadores de desenho vetorial no PDF e pelos caminhos no SVG, incluindo as versões com e sem imagem. O núcleo também é testado para furos, formas nos limites, pixels diagonais, filtros e simplificação.
 
